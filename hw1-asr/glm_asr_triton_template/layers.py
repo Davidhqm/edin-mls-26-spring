@@ -70,6 +70,30 @@ def rmsnorm_kernel(
     # Step 4: Apply weight and store
 
     # YOUR CODE HERE
+    pid = tl.program_id(0)
+    
+    # 1. Calculate row pointers
+    row_start_ptr = x_ptr + pid * stride_x
+    out_start_ptr = y_ptr + pid * stride_y
+    
+    offsets = tl.arange(0, BLOCK_SIZE)
+    mask = offsets < hidden_size
+    
+    # 2. Load input row and weights
+    x = tl.load(row_start_ptr + offsets, mask=mask, other=0.0)
+    w = tl.load(w_ptr + offsets, mask=mask, other=0.0)
+    
+    # 3. Compute RMS (Root Mean Square)
+    # Cast to float32 for numerical stability during accumulation
+    x_fp32 = x.to(tl.float32)
+    var = tl.sum(x_fp32 * x_fp32, axis=0) / hidden_size
+    rsqrt_var = tl.math.rsqrt(var + eps)
+    
+    # 4. Normalize and apply weight
+    y = x_fp32 * rsqrt_var * w
+    
+    # 5. Store result
+    tl.store(out_start_ptr + offsets, y, mask=mask)
     pass
 
 
@@ -105,6 +129,31 @@ def layernorm_kernel(
     # Step 5: Normalize and apply affine transform
 
     # YOUR CODE HERE
+    pid = tl.program_id(0)
+    
+    row_start_ptr = x_ptr + pid * stride_x
+    out_start_ptr = y_ptr + pid * stride_y
+    
+    offsets = tl.arange(0, BLOCK_SIZE)
+    mask = offsets < hidden_size
+    
+    # Load data
+    x = tl.load(row_start_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+    w = tl.load(w_ptr + offsets, mask=mask, other=0.0)
+    b = tl.load(b_ptr + offsets, mask=mask, other=0.0)
+    
+    # Step 1: Compute Mean
+    mean = tl.sum(x, axis=0) / hidden_size
+    x_centered = x - mean
+    
+    # Step 2: Compute Variance
+    var = tl.sum(x_centered * x_centered, axis=0) / hidden_size
+    rsqrt_var = tl.math.rsqrt(var + eps)
+    
+    # Step 3: Normalize and apply affine transform (weight/bias)
+    y = x_centered * rsqrt_var * w + b
+    
+    tl.store(out_start_ptr + offsets, y, mask=mask)
     pass
 
 
@@ -126,7 +175,22 @@ def gelu_kernel(x_ptr, y_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
     # Step 3: Store output
 
     # YOUR CODE HERE
-    pass
+    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < n_elements
+
+    x = tl.load(x_ptr + offsets, mask=mask)
+
+    # ---- Manual tanh implementation ----
+    x3 = x * x * x
+    inner = 0.79788456 * (x + 0.044715 * x3)
+
+    exp2x = tl.exp(2.0 * inner)
+    tanh_inner = (exp2x - 1.0) / (exp2x + 1.0)
+
+    cdf = 0.5 * (1.0 + tanh_inner)
+    y = x * cdf
+
+    tl.store(y_ptr + offsets, y, mask=mask)
 
 
 @triton.jit
@@ -147,7 +211,17 @@ def silu_kernel(x_ptr, y_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
     # Step 3: Multiply and store
 
     # YOUR CODE HERE
-    pass
+    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < n_elements
+
+    # Load input
+    x = tl.load(x_ptr + offsets, mask=mask)
+
+    # SiLU = x * sigmoid(x)
+    y = x * tl.sigmoid(x)
+
+    # Store result
+    tl.store(y_ptr + offsets, y, mask=mask)
 
 
 @triton.jit
@@ -188,6 +262,39 @@ def linear_kernel_tf32(
     # Step 3: Store the result
 
     # YOUR CODE HERE
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+
+    # 2. Identify the offsets for the rows and columns
+    rm = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    rn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    rk = tl.arange(0, BLOCK_K)
+
+    # 3. Create initial pointers for A and B
+    # A is (M, K), B is (K, N)
+    a_ptrs = a_ptr + (rm[:, None] * stride_am + rk[None, :] * stride_ak)
+    b_ptrs = b_ptr + (rk[:, None] * stride_bk + rn[None, :] * stride_bn)
+
+    # 4. Initialize the accumulator (must be float32 for numerical stability)
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+
+    # 5. Loop over the K dimension in blocks
+    for k in range(0, tl.cdiv(K, BLOCK_K)):
+        # Load tiles with masking to handle cases where K is not a multiple of BLOCK_K
+        a = tl.load(a_ptrs, mask=(rm[:, None] < M) & (rk[None, :] < K - k * BLOCK_K), other=0.0)
+        b = tl.load(b_ptrs, mask=(rk[:, None] < K - k * BLOCK_K) & (rn[None, :] < N), other=0.0)
+
+        # Matrix Multiply-Accumulate
+        acc = tl.dot(a, b, acc)
+
+        # Advance pointers along the K dimension
+        a_ptrs += BLOCK_K * stride_ak
+        b_ptrs += BLOCK_K * stride_bk
+
+    # 6. Store the final result back to C
+    c_ptrs = c_ptr + (rm[:, None] * stride_cm + rn[None, :] * stride_cn)
+    mask = (rm[:, None] < M) & (rn[None, :] < N)
+    tl.store(c_ptrs, acc.to(c_ptr.dtype.element_ty), mask=mask)
     pass
 
 
@@ -349,6 +456,29 @@ def softmax_kernel(x_ptr, y_ptr, stride_x, stride_y, n_cols, BLOCK_SIZE: tl.cons
     # Step 4: Store output
 
     # YOUR CODE HERE
+    row_idx = tl.program_id(0)
+
+    # Compute pointers for the current row
+    row_start_ptr = x_ptr + row_idx * stride_x
+    out_start_ptr = y_ptr + row_idx * stride_y
+
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < n_cols
+
+    # 1. Load row into SRAM (using -inf for padding so it doesn't affect the max)
+    row = tl.load(row_start_ptr + col_offsets, mask=mask, other=-float('inf'))
+
+    # 2. Subtract max for stability
+    row_max = tl.max(row, axis=0)
+    safe_row = row - row_max
+
+    # 3. Compute exponentials and sum
+    numerator = tl.exp(safe_row)
+    denominator = tl.sum(numerator, axis=0)
+
+    # 4. Normalize and store
+    softmax_output = numerator / denominator
+    tl.store(out_start_ptr + col_offsets, softmax_output, mask=mask)
     pass
 
 
@@ -508,13 +638,12 @@ class RMSNorm:
         self.hidden_size = hidden_size
         self.eps = eps
         self.weight = torch.ones(hidden_size, dtype=torch.float32)
-        self.use_triton = _is_power_of_two(hidden_size) # This flag will force a fallback to a PyTorch implementation of the kernels when the hidden_size is not a power of 2.
+        self.use_triton = _is_power_of_two(hidden_size)
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         original_shape = x.shape
 
-       
-        if self.use_triton and x.is_cuda:  # remove self.use_triton flag from this if-statement in case you want to always run your Triton kernel regardless of whether hidden_size is a power of 2.
+        if self.use_triton and x.is_cuda:
             batch_size = int(np.prod(x.shape[:-1]))
             x_flat = x.reshape(batch_size, self.hidden_size).contiguous()
             x_flat = x_flat.to(torch.float32)
@@ -552,12 +681,12 @@ class LayerNorm:
         self.eps = eps
         self.weight = torch.ones(hidden_size, dtype=torch.float32)
         self.bias = torch.zeros(hidden_size, dtype=torch.float32)
-        self.use_triton = _is_power_of_two(hidden_size)  # This flag will force a fallback to a PyTorch implementation of the kernels when the hidden_size is not a power of 2.
+        self.use_triton = _is_power_of_two(hidden_size)
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         original_shape = x.shape
 
-        if self.use_triton and x.is_cuda:  # remove self.use_triton flag from this if-statement in case you want to always run your Triton kernel regardless of whether hidden_size is a power of 2.
+        if self.use_triton and x.is_cuda:
             batch_size = int(np.prod(x.shape[:-1]))
             x_flat = x.reshape(batch_size, self.hidden_size).contiguous()
             x_flat = x_flat.to(torch.float32)
