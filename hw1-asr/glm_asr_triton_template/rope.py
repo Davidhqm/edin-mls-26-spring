@@ -24,7 +24,7 @@ def get_stream():
 # Triton Kernels for RoPE
 # ============================================================================
 
-@triton.jit
+@triton.jit #1
 def compute_freqs_kernel(
     positions_ptr,
     inv_freq_ptr,

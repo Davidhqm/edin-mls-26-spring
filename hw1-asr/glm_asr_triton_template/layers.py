@@ -40,7 +40,7 @@ def next_power_of_two(x: int) -> int:
 # Triton Kernels
 # ============================================================================
 
-@triton.jit
+@triton.jit #1
 def rmsnorm_kernel(
     x_ptr,
     w_ptr,
@@ -63,7 +63,7 @@ def rmsnorm_kernel(
     tl.store(y_ptr + pid * stride_y + offs, y, mask=mask)
 
 
-@triton.jit
+@triton.jit #2
 def layernorm_kernel(
     x_ptr,
     w_ptr,
@@ -90,7 +90,7 @@ def layernorm_kernel(
     tl.store(y_ptr + pid * stride_y + offs, y, mask=mask)
 
 
-@triton.jit
+@triton.jit #3
 def gelu_kernel(x_ptr, y_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
     """GELU using tanh approximation."""
     pid = tl.program_id(0)
@@ -100,11 +100,11 @@ def gelu_kernel(x_ptr, y_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
     sqrt_2_over_pi = 0.79788456
     x3 = x * x * x
     inner = sqrt_2_over_pi * (x + 0.044715 * x3)
-    y = x * 0.5 * (1.0 + tl.libdevice.tanh(inner))
+    y = x * 0.5 * (1.0 + tl.extra.cuda.libdevice.tanh(inner))
     tl.store(y_ptr + offs, y, mask=mask)
 
 
-@triton.jit
+@triton.jit #4
 def silu_kernel(x_ptr, y_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
     """SiLU/Swish: x * sigmoid(x)."""
     pid = tl.program_id(0)
@@ -116,7 +116,7 @@ def silu_kernel(x_ptr, y_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
     tl.store(y_ptr + offs, y, mask=mask)
 
 
-@triton.jit
+@triton.jit #4
 def linear_kernel_tf32(
     a_ptr,
     b_ptr,
@@ -203,7 +203,7 @@ def linear_gelu_kernel(
     sqrt_2_over_pi = 0.7978845608028654
     acc3 = acc * acc * acc
     inner = sqrt_2_over_pi * (acc + 0.044715 * acc3)
-    acc = acc * 0.5 * (1.0 + tl.libdevice.tanh(inner))
+    acc = acc * 0.5 * (1.0 + tl.extra.cuda.libdevice.tanh(inner))
 
     tl.store(
         c_ptr + offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn,
@@ -299,7 +299,7 @@ def embedding_kernel(
     tl.store(output_ptr + pid0 * stride_out0 + offs, w, mask=mask)
 
 
-@triton.jit
+@triton.jit #5
 def softmax_kernel(x_ptr, y_ptr, stride_x, stride_y, n_cols, BLOCK_SIZE: tl.constexpr):
     """Numerically stable softmax over last dimension."""
     row = tl.program_id(0)

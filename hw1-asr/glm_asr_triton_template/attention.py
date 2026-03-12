@@ -24,7 +24,7 @@ def get_stream():
 # Triton Kernels for Attention
 # ============================================================================
 
-@triton.jit
+@triton.jit #1
 def attention_scores_kernel(
     q_ptr,
     k_ptr,
@@ -70,7 +70,7 @@ def attention_scores_kernel(
     )
 
 
-@triton.jit
+@triton.jit #2
 def softmax_inplace_kernel(scores_ptr, stride_s, seq_k, BLOCK_SIZE: tl.constexpr):
     """
     Apply softmax along the last dimension (seq_k).
@@ -88,7 +88,7 @@ def softmax_inplace_kernel(scores_ptr, stride_s, seq_k, BLOCK_SIZE: tl.constexpr
     tl.store(scores_ptr + row * stride_s + offs, out, mask=mask)
 
 
-@triton.jit
+@triton.jit #3
 def attention_output_kernel(
     attn_ptr,
     v_ptr,
