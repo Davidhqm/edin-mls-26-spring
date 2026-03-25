@@ -19,6 +19,15 @@ def get_stream():
         return torch.cuda.current_stream().cuda_stream
     return None
 
+_FLASH_OUT_CACHE = {}
+
+def _get_flash_out(device, batch_heads, seq_q, head_dim):
+    key = (device, batch_heads, seq_q, head_dim)
+    out = _FLASH_OUT_CACHE.get(key)
+    if out is None or out.shape != (batch_heads, seq_q, head_dim):
+        out = torch.empty((batch_heads, seq_q, head_dim), dtype=torch.float32, device=device)
+        _FLASH_OUT_CACHE[key] = out
+    return out
 
 # ============================================================================
 # Triton Kernels for Attention
@@ -365,12 +374,18 @@ def scaled_dot_product_attention(
     seq_k_padded = next_power_of_two(seq_k)
     head_dim_padded = next_power_of_two(head_dim)
 
+    has_nonzero_mask = ( attention_mask is not None and torch.any(attention_mask != 0))
+
     use_flash = (
         q.is_cuda
-        and attention_mask is None
         and head_dim_padded <= MAX_ATTENTION_DIM
+        and (
+            attention_mask is None
+            or (is_causal and not has_nonzero_mask)
+        )
     )
 
+    output = _get_flash_out(q.device, batch * num_heads, seq_q, head_dim)
     if use_flash:
         q_flat = q.reshape(batch * num_heads, seq_q, head_dim).to(torch.float32).contiguous()
         k_flat = k.reshape(batch * num_heads, seq_k, head_dim).to(torch.float32).contiguous()

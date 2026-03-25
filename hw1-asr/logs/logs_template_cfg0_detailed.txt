@@ -1,0 +1,55 @@
+======================================================================
+GLM-ASR Detailed Operator Profiling
+======================================================================
+
+Loading test audio...
+Audio: 3.50s @ 16000Hz
+
+Loading model from glm_asr_triton_template...
+Loading HuggingFace model: zai-org/GLM-ASR-Nano-2512
+Creating Triton model with config:
+  Audio: hidden=1280, heads=20, layers=32
+  Text: hidden=2048, heads=16, kv_heads=4, layers=28
+Loading HuggingFace weights...
+Loading audio encoder weights...
+Loading multi-modal projector weights...
+Loading text decoder weights...
+Weight loading complete!
+Input features shape: torch.Size([1, 128, 3000])
+Input IDs shape: torch.Size([1, 59])
+
+======================================================================
+DETAILED OPERATOR PROFILING (TORCH)
+======================================================================
+
+[1/4] Profiling Audio Encoder...
+  Audio Encoder: 769.01ms (+/- 656.10ms)
+
+[2/4] Profiling Multi-modal Projector...
+  Projector: 7.64ms (+/- 6.21ms)
+
+[3/4] Profiling Text Decoder (Prefill)...
+  Decoder Prefill: 340.22ms (+/- 607.08ms)
+
+[4/4] Profiling Decode Steps...
+  Decode Step (avg): 49.23ms (+/- 62.11ms)
+
+[5] Profiling Individual Decoder Layers...
+  Layer 0: 1.48ms (+/- 0.06ms)
+  Layer 1: 1.44ms (+/- 0.02ms)
+  Layer 2: 1.43ms (+/- 0.02ms)
+  Layer 3: 1.43ms (+/- 0.02ms)
+  Layer 4: 1.43ms (+/- 0.02ms)
+
+======================================================================
+PERFORMANCE SUMMARY
+======================================================================
+
+Component                              Time (ms)   % of Total
+------------------------------------------------------------
+Audio Encoder                           769.01ms       21.5%
+Multi-modal Projector                     7.64ms        0.2%
+Decoder (Prefill)                       340.22ms        9.5%
+Decoder (50 decode steps)              2461.28ms       68.8%
+------------------------------------------------------------
+TOTAL (estimated for 50 tokens)        3578.15ms

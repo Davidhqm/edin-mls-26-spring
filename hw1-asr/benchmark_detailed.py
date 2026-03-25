@@ -359,7 +359,69 @@ def detailed_profile_torch(model, input_features, input_ids, input_features_mask
 
     return results
 
+def profile_torch_kernels(
+    model,
+    input_features,
+    input_ids,
+    input_features_mask,
+    out_path="torch_profiler_ops.txt",
+    max_new_tokens=64,
+):
+    """Profile operator/kernel time with torch.profiler and dump top ops."""
+    import torch
+    from torch.profiler import profile, ProfilerActivity
 
+    activities = [ProfilerActivity.CPU]
+    if torch.cuda.is_available():
+        activities.append(ProfilerActivity.CUDA)
+
+    # Match benchmark_student.py behavior
+    generate_fn = model.generate
+    if hasattr(model, "generate_v8b"):
+        generate_fn = model.generate_v8b
+    elif hasattr(model, "generate_v8"):
+        generate_fn = model.generate_v8
+    elif hasattr(model, "generate_v6"):
+        generate_fn = model.generate_v6
+
+    with profile(
+        activities=activities,
+        record_shapes=True,
+        profile_memory=True,
+        with_stack=False,
+    ) as prof:
+        with torch.no_grad():
+            try:
+                _ = generate_fn(
+                    input_features,
+                    input_ids=input_ids,
+                    input_features_mask=input_features_mask,
+                    max_new_tokens=max_new_tokens,
+                    temperature=1.0,
+                    top_k=1,
+                )
+            except TypeError:
+                _ = generate_fn(
+                    input_features,
+                    input_ids=input_ids,
+                    max_new_tokens=max_new_tokens,
+                    temperature=1.0,
+                    top_k=1,
+                )
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+    sort_key = "self_cuda_time_total" if torch.cuda.is_available() else "self_cpu_time_total"
+    table = prof.key_averages().table(sort_by=sort_key, row_limit=60)
+
+    print("\n" + "=" * 70)
+    print("TORCH PROFILER TOP OPS")
+    print("=" * 70)
+    print(table)
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(table + "\n")
+    print(f"\nSaved profiler table to: {out_path}")
 
 def print_summary(component_results):
     """Print a summary table of all profiling results."""
@@ -432,6 +494,13 @@ def main():
     parser.add_argument('--audio', type=str, help='Path to test audio file')
     parser.add_argument('--runs', type=int, default=3, help='Number of profiling runs')
     parser.add_argument('--nsys', action='store_true', help='Run Nsight Systems profiling')
+    
+    parser.add_argument('--torch-profiler', action='store_true',
+                      help='Run torch.profiler and print top CUDA/CPU ops')
+    parser.add_argument('--profiler-out', type=str, default='torch_profiler_ops.txt',
+                      help='Output file for torch.profiler table')
+    parser.add_argument('--profile-tokens', type=int, default=64,
+                      help='max_new_tokens for torch profiler run')
     args = parser.parse_args()
 
     print("="*70)
@@ -530,6 +599,22 @@ def main():
 
     # Print summary
     print_summary(component_results)
+    if args.torch_profiler:
+        if use_torch_backend:
+            out_path = args.profiler_out
+            if not os.path.isabs(out_path):
+                out_path = os.path.join(script_dir, out_path)
+
+            profile_torch_kernels(
+                model,
+                input_features,
+                input_ids,
+                input_features_mask,
+                out_path=out_path,
+                max_new_tokens=args.profile_tokens,
+            )
+        else:
+            print("Skipping --torch-profiler: only supported for Triton/Torch backend.")
 
     sys.path.remove(folder_path)
     return 0

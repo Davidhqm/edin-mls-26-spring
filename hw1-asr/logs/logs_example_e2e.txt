@@ -1,0 +1,43 @@
+======================================================================
+GLM-ASR Student Version Benchmark
+======================================================================
+
+Loading test audio...
+Loaded audio from /home/s2149842/edin-mls-26-spring/hw1-asr/test_audio.wav
+Audio duration: 3.50s
+Expected: CONCORD RETURNED TO ITS PLACE AMIDST THE TENTS
+
+======================================================================
+Testing: glm_asr_triton_example
+======================================================================
+Applying baseline configuration (example)...
+Loading model from glm_asr_triton_example...
+Loading HuggingFace model: zai-org/GLM-ASR-Nano-2512
+Creating Triton model with config:
+  Audio: hidden=1280, heads=20, layers=32
+  Text: hidden=2048, heads=16, kv_heads=4, layers=28
+Loading HuggingFace weights...
+Loading audio encoder weights...
+Loading multi-modal projector weights...
+Loading text decoder weights...
+Weight loading complete!
+Using generate function: generate
+Warmup (2 runs)...
+Benchmarking (5 runs)...
+  Run 1: 1488.9ms (13 tokens)
+  Run 2: 1488.3ms (13 tokens)
+  Run 3: 1487.6ms (13 tokens)
+  Run 4: 1488.2ms (13 tokens)
+  Run 5: 1488.1ms (13 tokens)
+
+======================================================================
+RESULTS
+======================================================================
+Time: 1488.2ms (+/- 0.4ms)
+Tokens: 13
+Speed: 114.48ms/token
+
+Transcription: Concord returned to its place amidst the tents.
+
+Accuracy: 100.0%
+Status: PASS
