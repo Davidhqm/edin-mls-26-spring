@@ -172,6 +172,108 @@ def causal_mask_kernel(
     )
 
 
+@triton.jit
+def flash_attention_fwd_kernel(
+    q_ptr,
+    k_ptr,
+    v_ptr,
+    o_ptr,
+    seq_q,
+    seq_k,
+    head_dim,
+    scale,
+    stride_q0,
+    stride_q1,
+    stride_q2,
+    stride_k0,
+    stride_k1,
+    stride_k2,
+    stride_v0,
+    stride_v1,
+    stride_v2,
+    stride_o0,
+    stride_o1,
+    stride_o2,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+    CAUSAL: tl.constexpr,
+):
+    """
+    FlashAttention-style fused forward kernel.
+    Computes softmax(QK^T) @ V in a numerically stable blockwise fashion.
+    """
+    pid_bh = tl.program_id(0)
+    pid_m = tl.program_id(1)
+
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_d = tl.arange(0, BLOCK_D)
+    mask_m = offs_m < seq_q
+    mask_d = offs_d < head_dim
+
+    q = tl.load(
+        q_ptr
+        + pid_bh * stride_q0
+        + offs_m[:, None] * stride_q1
+        + offs_d[None, :] * stride_q2,
+        mask=mask_m[:, None] & mask_d[None, :],
+        other=0.0,
+    )
+
+    m_i = tl.full((BLOCK_M,), -float("inf"), dtype=tl.float32)
+    l_i = tl.zeros((BLOCK_M,), dtype=tl.float32)
+    acc = tl.zeros((BLOCK_M, BLOCK_D), dtype=tl.float32)
+
+    for start_n in range(0, seq_k, BLOCK_N):
+        offs_n = start_n + tl.arange(0, BLOCK_N)
+        mask_n = offs_n < seq_k
+
+        k = tl.load(
+            k_ptr
+            + pid_bh * stride_k0
+            + offs_n[:, None] * stride_k1
+            + offs_d[None, :] * stride_k2,
+            mask=mask_n[:, None] & mask_d[None, :],
+            other=0.0,
+        )
+        v = tl.load(
+            v_ptr
+            + pid_bh * stride_v0
+            + offs_n[:, None] * stride_v1
+            + offs_d[None, :] * stride_v2,
+            mask=mask_n[:, None] & mask_d[None, :],
+            other=0.0,
+        )
+
+        qk = tl.dot(q, tl.trans(k)) * scale
+        qk = tl.where(mask_n[None, :], qk, -float("inf"))
+
+        if CAUSAL:
+            qk = tl.where(offs_n[None, :] <= offs_m[:, None], qk, -float("inf"))
+
+        m_ij = tl.maximum(m_i, tl.max(qk, axis=1))
+        p = tl.exp(qk - m_ij[:, None])
+        l_ij = tl.sum(p, axis=1)
+
+        alpha = tl.exp(m_i - m_ij)
+        acc = acc * alpha[:, None]
+        acc = acc + tl.dot(p.to(tl.float32), v)
+        l_i = l_i * alpha + l_ij
+        m_i = m_ij
+
+    l_i_safe = tl.where(l_i > 0, l_i, 1.0)
+    out = acc / l_i_safe[:, None]
+
+    tl.store(
+        o_ptr
+        + pid_bh * stride_o0
+        + offs_m[:, None] * stride_o1
+        + offs_d[None, :] * stride_o2,
+        out,
+        mask=mask_m[:, None] & mask_d[None, :],
+    )
+
+
 # ============================================================================
 # Attention Classes
 # ============================================================================
@@ -262,6 +364,60 @@ def scaled_dot_product_attention(
 
     seq_k_padded = next_power_of_two(seq_k)
     head_dim_padded = next_power_of_two(head_dim)
+
+    use_flash = (
+        q.is_cuda
+        and attention_mask is None
+        and head_dim_padded <= MAX_ATTENTION_DIM
+    )
+
+    if use_flash:
+        q_flat = q.reshape(batch * num_heads, seq_q, head_dim).to(torch.float32).contiguous()
+        k_flat = k.reshape(batch * num_heads, seq_k, head_dim).to(torch.float32).contiguous()
+        v_flat = v.reshape(batch * num_heads, seq_k, head_dim).to(torch.float32).contiguous()
+
+        output = torch.empty(
+            (batch * num_heads, seq_q, head_dim),
+            dtype=torch.float32,
+            device=q.device,
+        )
+
+        block_m = 32
+        block_n = 64
+        block_d = head_dim_padded
+        num_warps = 4 if head_dim_padded <= 64 else 8
+
+        grid = (batch * num_heads, triton.cdiv(seq_q, block_m))
+        flash_attention_fwd_kernel[grid](
+            q_flat,
+            k_flat,
+            v_flat,
+            output,
+            seq_q,
+            seq_k,
+            head_dim,
+            float(scale),
+            q_flat.stride(0),
+            q_flat.stride(1),
+            q_flat.stride(2),
+            k_flat.stride(0),
+            k_flat.stride(1),
+            k_flat.stride(2),
+            v_flat.stride(0),
+            v_flat.stride(1),
+            v_flat.stride(2),
+            output.stride(0),
+            output.stride(1),
+            output.stride(2),
+            BLOCK_M=block_m,
+            BLOCK_N=block_n,
+            BLOCK_D=block_d,
+            CAUSAL=is_causal,
+            num_warps=num_warps,
+            num_stages=2,
+        )
+
+        return output.reshape(batch, num_heads, seq_q, head_dim).to(q.dtype)
 
     use_triton = (
         q.is_cuda
