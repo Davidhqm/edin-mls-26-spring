@@ -1,0 +1,7 @@
+bash: : command not found
+benchmark_detailed.sh: line 17: set: -: invalid option
+set: usage: set [-abefhkmnptuvxBCEHPT] [-o option-name] [--] [-] [arg ...]
+bash: : command not found
+bash: : command not found
+benchmark_detailed.sh: line 21: syntax error near unexpected token `$'{\r''
+benchmark_detailed.sh: line 21: `show_help() {'

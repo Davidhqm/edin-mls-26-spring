@@ -24,7 +24,7 @@ def get_stream():
 # Triton Kernels for RoPE
 # ============================================================================
 
-@triton.jit
+@triton.jit #1
 def compute_freqs_kernel(
     positions_ptr,
     inv_freq_ptr,
@@ -40,27 +40,27 @@ def compute_freqs_kernel(
     stride_sin1,
     BLOCK: tl.constexpr,
 ):
-    """
-    Compute cos and sin for rotary embeddings.
-
-    *** TODO: Implement this kernel ***
-
-    Grid: (seq_len,)
-    """
+    """Compute cos and sin for rotary embeddings."""
     pid = tl.program_id(0)
-
-    # ============================================================================
-    # TODO: Implement frequency computation
-    # ============================================================================
-    #
-    # Step 1: Load position as scalar
-    # Step 2: Load inverse frequencies
-    # Step 3: Compute freqs = position * inv_freq
-    # Step 4: Compute cos and sin
-    # Step 5: Store concatenated cos/sin
-
-    # YOUR CODE HERE
-    pass
+    offs = tl.arange(0, BLOCK)
+    mask = offs < half_dim
+    pos = tl.load(positions_ptr + pid * stride_pos)
+    inv = tl.load(inv_freq_ptr + offs * stride_inv, mask=mask, other=0.0)
+    freqs = pos * inv
+    cos_half = tl.cos(freqs)
+    sin_half = tl.sin(freqs)
+    tl.store(cos_ptr + pid * stride_cos0 + offs * stride_cos1, cos_half, mask=mask)
+    tl.store(
+        cos_ptr + pid * stride_cos0 + (offs + half_dim) * stride_cos1,
+        cos_half,
+        mask=mask,
+    )
+    tl.store(sin_ptr + pid * stride_sin0 + offs * stride_sin1, sin_half, mask=mask)
+    tl.store(
+        sin_ptr + pid * stride_sin0 + (offs + half_dim) * stride_sin1,
+        sin_half,
+        mask=mask,
+    )
 
 
 # ============================================================================
